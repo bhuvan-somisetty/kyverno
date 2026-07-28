@@ -140,30 +140,33 @@ func fetchBundles(ref name.Reference, limit int, predicateType string, remoteOpt
 		}
 		bundles = append(bundles, &verificationBundle{ProtoBundle: b})
 	}
-	if predicateType != "" {
-		filteredBundles := make([]*verificationBundle, 0)
-		for _, b := range bundles {
-			dsseEnvelope := b.ProtoBundle.Bundle.GetDsseEnvelope()
-			if dsseEnvelope != nil {
-				if dsseEnvelope.PayloadType != "application/vnd.in-toto+json" {
-					continue
-				}
-				var intotoStatement in_toto.Statement //nolint:staticcheck
-				if err := json.Unmarshal(dsseEnvelope.Payload, &intotoStatement); err != nil {
-					continue
-				}
-
-				if intotoStatement.PredicateType == predicateType {
-					filteredBundles = append(filteredBundles, &verificationBundle{
-						ProtoBundle:   b.ProtoBundle,
-						DSSE_Envelope: &intotoStatement,
-					})
-				}
+	decodedBundles := make([]*verificationBundle, 0, len(bundles))
+	for _, b := range bundles {
+		dsseEnvelope := b.ProtoBundle.Bundle.GetDsseEnvelope()
+		if dsseEnvelope == nil || dsseEnvelope.PayloadType != "application/vnd.in-toto+json" {
+			// not a DSSE-wrapped in-toto attestation (e.g. a plain signature bundle),
+			// keep it only when the caller isn't filtering by predicate type
+			if predicateType == "" {
+				decodedBundles = append(decodedBundles, b)
 			}
+			continue
 		}
-		return filteredBundles, desc, nil
+		var intotoStatement in_toto.Statement //nolint:staticcheck
+		if err := json.Unmarshal(dsseEnvelope.Payload, &intotoStatement); err != nil {
+			if predicateType == "" {
+				decodedBundles = append(decodedBundles, b)
+			}
+			continue
+		}
+		if predicateType != "" && intotoStatement.PredicateType != predicateType {
+			continue
+		}
+		decodedBundles = append(decodedBundles, &verificationBundle{
+			ProtoBundle:   b.ProtoBundle,
+			DSSE_Envelope: &intotoStatement,
+		})
 	}
-	return bundles, desc, nil
+	return decodedBundles, desc, nil
 }
 
 func buildPolicy(desc *v1.Descriptor, opts verifiers.Options) (verify.PolicyBuilder, error) {
@@ -205,16 +208,21 @@ func decodeStatementsFromBundles(bundles []*verificationResult) ([]map[string]an
 	}
 	var err error
 	var statement map[string]any
-	var intotostatement in_toto.Statement //nolint:staticcheck
-	decodedStatements := make([]map[string]any, len(bundles))
-	for i, b := range bundles {
-		intotostatement = *b.Bundle.DSSE_Envelope
+	decodedStatements := make([]map[string]any, 0, len(bundles))
+	for _, b := range bundles {
+		// bundles without a decoded DSSE envelope are not in-toto attestations
+		// (e.g. plain signature bundles fetched alongside attestations) and can't be
+		// turned into a statement, so skip them instead of dereferencing a nil pointer
+		if b.Bundle == nil || b.Bundle.DSSE_Envelope == nil {
+			continue
+		}
+		intotostatement := *b.Bundle.DSSE_Envelope
 		statement, err = data.ToMap(intotostatement)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to decode statement: %v", intotostatement.Type)
 		}
 		statement["type"] = intotostatement.PredicateType
-		decodedStatements[i] = statement
+		decodedStatements = append(decodedStatements, statement)
 	}
 	return decodedStatements, nil
 }

@@ -444,6 +444,23 @@ func TestDecodeStatementsFromBundles(t *testing.T) {
 		bundles: []*verificationResult{},
 		wantLen: 0,
 		wantErr: false,
+	}, {
+		name: "bundle without a DSSE envelope is skipped instead of panicking",
+		bundles: []*verificationResult{
+			{Bundle: &verificationBundle{DSSE_Envelope: nil}},
+		},
+		wantLen: 0,
+		wantErr: false,
+	}, {
+		name: "mix of decoded and non-attestation bundles only decodes the DSSE ones",
+		bundles: []*verificationResult{
+			{Bundle: &verificationBundle{DSSE_Envelope: nil}},
+			{Bundle: &verificationBundle{DSSE_Envelope: &in_toto.Statement{ //nolint:staticcheck
+				StatementHeader: in_toto.StatementHeader{PredicateType: "https://slsa.dev/provenance/v1"}, //nolint:staticcheck
+			}}},
+		},
+		wantLen: 1,
+		wantErr: false,
 	}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
